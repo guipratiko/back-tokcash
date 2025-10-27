@@ -565,6 +565,8 @@ app.post('/api/videos/generate', async (req, res) => {
     });
 
     console.log('💾 Vídeo criado com ID:', video._id);
+    console.log('📹 videoId:', video._id?.toString());
+    console.log('👤 userId:', user._id?.toString());
 
     // Enviar webhook assíncrono para Clerky API
     const clerkyUrl = process.env.CLERKY_VIDEO_WEBHOOK_URL;
@@ -574,23 +576,45 @@ app.post('/api/videos/generate', async (req, res) => {
       return res.status(500).json({ error: 'Webhook URL não configurada' });
     }
     
+    // Validar que temos um ID válido
+    if (!video._id) {
+      console.error('❌ video._id é undefined');
+      return res.status(500).json({ error: 'ID do vídeo inválido' });
+    }
+    
+    const videoIdString = String(video._id);
+    const userIdString = String(user._id);
+    
+    console.log('🔍 Validação de IDs:');
+    console.log('  - video._id tipo:', typeof video._id);
+    console.log('  - video._id valor:', video._id);
+    console.log('  - videoIdString:', videoIdString);
+    console.log('  - videoIdString length:', videoIdString.length);
+    
+    // Validar campos obrigatórios
+    if (!videoIdString || videoIdString === 'undefined' || videoIdString === 'null') {
+      console.error('❌ videoId inválido após conversão');
+      return res.status(500).json({ error: 'ID do vídeo inválido após conversão' });
+    }
+    
     const payload = {
-      videoId: video._id.toString(),
-      userId: user._id.toString(),
+      videoId: videoIdString,
+      userId: userIdString,
       prompt: objetivo,
-      nicho,
-      cta,
-      duracao,
-      estilo,
-      persona,
+      nicho: nicho || '',
+      cta: cta || '',
+      duracao: duracao || '30s',
+      estilo: estilo || '',
+      persona: persona || '',
       callbackUrl: `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/webhooks/video-callback`,
     };
 
     console.log('📤 Enviando para Clerky/n8n...');
     console.log('🔗 URL:', clerkyUrl);
-    console.log('📦 Payload:', JSON.stringify(payload, null, 2));
+    console.log('📦 Payload COMPLETO:', JSON.stringify(payload, null, 2));
+    console.log('✅ videoId no payload:', payload.videoId);
 
-    // Fire-and-forget (não esperamos resposta)
+    // Enviar webhook e registrar resposta
     fetch(clerkyUrl, {
       method: 'POST',
       headers: { 
@@ -598,13 +622,27 @@ app.post('/api/videos/generate', async (req, res) => {
         'User-Agent': 'TokCash/1.0'
       },
       body: JSON.stringify(payload),
-    }).catch((error) => {
-      console.error('❌ Erro ao enviar webhook:', error.message);
-      // Se falhar o envio, marcar como failed
-      Video.findByIdAndUpdate(video._id, {
-        status: 'failed',
-      }).catch(console.error);
-    });
+    })
+      .then(async (response) => {
+        console.log('📨 Resposta do webhook recebida:', response.status);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('❌ Erro na resposta:', errorText);
+          Video.findByIdAndUpdate(video._id, {
+            status: 'failed',
+          }).catch(console.error);
+        } else {
+          console.log('✅ Webhook enviado com sucesso');
+        }
+      })
+      .catch((error) => {
+        console.error('❌ Erro ao enviar webhook:', error.message);
+        console.error('❌ Stack:', error.stack);
+        // Se falhar o envio, marcar como failed
+        Video.findByIdAndUpdate(video._id, {
+          status: 'failed',
+        }).catch(console.error);
+      });
 
     // Retorna imediatamente com status "processing"
     res.json({ video });
