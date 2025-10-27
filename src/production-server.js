@@ -79,7 +79,10 @@ const PromptSchema = new mongoose.Schema({
 const VideoSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   promptId: { type: mongoose.Schema.Types.ObjectId, ref: 'Prompt' },
-  status: { type: String, default: 'queued' },
+  inputBrief: Object,
+  resultText: String,
+  tags: [String],
+  status: { type: String, enum: ['processing', 'completed', 'failed'], default: 'processing' },
   assets: Object,
 }, { timestamps: true });
 
@@ -504,12 +507,33 @@ app.delete('/api/prompts/:id', async (req, res) => {
 app.post('/api/videos/generate', async (req, res) => {
   try {
     const token = req.cookies.accessToken;
+    
+    console.log('\n🎬 === GERANDO VÍDEO ===');
+    console.log('🔐 Verificando autenticação...');
+    console.log('🍪 Token recebido:', token ? 'Sim' : 'Não');
+    console.log('📋 Sessões ativas:', sessions.size);
+    
     const session = sessions.get(token);
     
     if (!session) {
-      return res.status(401).json({ error: 'Não autenticado' });
+      console.log('❌ Sessão não encontrada');
+      return res.status(401).json({ error: 'Não autenticado. Faça login novamente.' });
+    }
+    
+    console.log('✅ Usuário autenticado:', session.email);
+
+    const { nicho, objetivo, cta, duracao, estilo, persona } = req.body;
+
+    console.log('\n🚀 === GERANDO VÍDEO ===');
+    console.log('📝 Dados recebidos:', { nicho, objetivo, cta, duracao });
+    
+    // Validar campos obrigatórios
+    if (!nicho || !objetivo) {
+      console.log('❌ Campos obrigatórios faltando');
+      return res.status(400).json({ error: 'Nicho e objetivo são obrigatórios' });
     }
 
+    // Verificar e consumir créditos
     const user = await User.findById(session.id);
     const cost = parseInt(process.env.VIDEO_CREDIT_COST || '5', 10);
     
@@ -527,30 +551,65 @@ app.post('/api/videos/generate', async (req, res) => {
       reason: 'Geração de vídeo',
     });
 
+    console.log('💳 Créditos debitados:', cost);
+
+    // Criar vídeo com status "processing"
     const video = await Video.create({
       userId: user._id,
       promptId: req.body.promptId || undefined,
-      status: 'queued',
+      inputBrief: { nicho, objetivo, cta, duracao, estilo, persona },
+      resultText: '',
+      tags: [nicho, estilo].filter(Boolean),
+      status: 'processing',
       assets: {},
     });
 
-    // Simular processamento
-    setTimeout(async () => {
-      await Video.findByIdAndUpdate(video._id, { status: 'processing' });
-    }, 2000);
+    console.log('💾 Vídeo criado com ID:', video._id);
 
-    setTimeout(async () => {
-      await Video.findByIdAndUpdate(video._id, {
-        status: 'ready',
-        assets: {
-          videoUrl: 'https://example.com/video.mp4',
-          scriptUrl: 'https://example.com/script.txt',
-        },
-      });
-    }, 10000);
+    // Enviar webhook assíncrono para Clerky API
+    const clerkyUrl = process.env.CLERKY_VIDEO_WEBHOOK_URL;
+    
+    if (!clerkyUrl) {
+      console.error('❌ CLERKY_VIDEO_WEBHOOK_URL não configurado');
+      return res.status(500).json({ error: 'Webhook URL não configurada' });
+    }
+    
+    const payload = {
+      videoId: video._id.toString(),
+      userId: user._id.toString(),
+      prompt: objetivo,
+      nicho,
+      cta,
+      duracao,
+      estilo,
+      persona,
+      callbackUrl: `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/webhooks/video-callback`,
+    };
 
+    console.log('📤 Enviando para Clerky/n8n...');
+    console.log('🔗 URL:', clerkyUrl);
+    console.log('📦 Payload:', JSON.stringify(payload, null, 2));
+
+    // Fire-and-forget (não esperamos resposta)
+    fetch(clerkyUrl, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'User-Agent': 'TokCash/1.0'
+      },
+      body: JSON.stringify(payload),
+    }).catch((error) => {
+      console.error('❌ Erro ao enviar webhook:', error.message);
+      // Se falhar o envio, marcar como failed
+      Video.findByIdAndUpdate(video._id, {
+        status: 'failed',
+      }).catch(console.error);
+    });
+
+    // Retorna imediatamente com status "processing"
     res.json({ video });
   } catch (error) {
+    console.error('❌ Erro:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -571,6 +630,59 @@ app.get('/api/videos', async (req, res) => {
     
     res.json({ videos });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/videos/:id', async (req, res) => {
+  try {
+    const token = req.cookies.accessToken;
+    const session = sessions.get(token);
+    
+    if (!session) {
+      return res.status(401).json({ error: 'Não autenticado' });
+    }
+
+    const video = await Video.findOne({
+      _id: req.params.id,
+      userId: session.id
+    }).lean();
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Vídeo não encontrado' });
+    }
+
+    res.json({ video });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/videos/:id', async (req, res) => {
+  try {
+    const token = req.cookies.accessToken;
+    const session = sessions.get(token);
+    
+    if (!session) {
+      return res.status(401).json({ error: 'Não autenticado' });
+    }
+
+    const video = await Video.findOne({
+      _id: req.params.id,
+      userId: session.id
+    });
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Vídeo não encontrado' });
+    }
+
+    await Video.findByIdAndDelete(req.params.id);
+    
+    console.log('🗑️ Vídeo deletado:', req.params.id);
+
+    res.json({ success: true, message: 'Vídeo deletado com sucesso' });
+  } catch (error) {
+    console.error('❌ Erro ao deletar vídeo:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -680,6 +792,61 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
     console.log('📄 Preview:', result.substring(0, 100) + '...');
 
     res.json({ success: true, message: 'Prompt atualizado' });
+  } catch (error) {
+    console.error('❌ Erro no callback:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/webhooks/video-callback', async (req, res) => {
+  try {
+    console.log('\n📥 === CALLBACK DE VÍDEO RECEBIDO ===');
+    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
+    
+    const { videoId, result, status, WEBHOOK_SECRET } = req.body;
+
+    // Validar secret (opcional)
+    const secret = process.env.WEBHOOK_VIDEO_CALLBACK_SECRET;
+    if (secret && WEBHOOK_SECRET !== secret) {
+      console.log('❌ Secret inválido');
+      return res.status(401).json({ error: 'Secret inválido' });
+    }
+
+    if (!videoId) {
+      console.log('❌ videoId faltando');
+      return res.status(400).json({ error: 'videoId é obrigatório' });
+    }
+
+    // Buscar vídeo no banco usando videoId
+    const video = await Video.findById(videoId);
+
+    if (!video) {
+      console.log('❌ Vídeo não encontrado:', videoId);
+      return res.status(404).json({ error: 'Vídeo não encontrado' });
+    }
+
+    console.log('✅ Vídeo encontrado:', videoId);
+    console.log('👤 UserId:', video.userId);
+
+    // Atualizar vídeo com resultado
+    video.status = status === 'failed' ? 'failed' : 'completed';
+    
+    // Se vieram assets, atualizar
+    if (req.body.assets) {
+      video.assets = req.body.assets;
+    }
+    
+    // Se vier result, salvar
+    if (result) {
+      video.resultText = result;
+    }
+    
+    await video.save();
+
+    console.log('✅ Vídeo atualizado com sucesso!');
+    console.log('📊 Status:', video.status);
+
+    res.json({ success: true, message: 'Vídeo atualizado' });
   } catch (error) {
     console.error('❌ Erro no callback:', error);
     res.status(500).json({ error: error.message });
