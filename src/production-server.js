@@ -51,6 +51,7 @@ const UserSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true, lowercase: true },
   passwordHash: String,
+  passwordResetToken: String,
   role: { type: String, default: 'user' },
   credits: { type: Number, default: 0 },
   cpf: String,
@@ -235,6 +236,44 @@ app.post('/api/auth/logout', (req, res) => {
   if (token) sessions.delete(token);
   res.clearCookie('accessToken');
   res.json({ message: 'Logout realizado' });
+});
+
+app.post('/api/auth/set-password', async (req, res) => {
+  try {
+    const { token, email, password } = req.body;
+
+    if (!token || !email || !password) {
+      return res.status(400).json({ error: 'Token, email e senha são obrigatórios' });
+    }
+
+    // Validar força da senha
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    if (user.passwordResetToken !== token) {
+      return res.status(401).json({ error: 'Token inválido ou expirado' });
+    }
+
+    // Atualizar senha e limpar token
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordResetToken = null;
+    await user.save();
+
+    console.log('✅ Senha definida para:', email);
+
+    res.json({ success: true, message: 'Senha definida com sucesso' });
+  } catch (error) {
+    console.error('❌ Erro ao definir senha:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get('/api/auth/me', async (req, res) => {
@@ -713,15 +752,21 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
     }
 
     if (status === 'paid' || status === 'approved') {
+      let isNewUser = false;
       // Buscar ou criar usuário
       let user = await User.findOne({ email });
 
       if (!user) {
+        isNewUser = true;
+        // Gerar token para definição de senha
+        const resetToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         const tempPassword = Math.random().toString(36).slice(-8);
+        
         user = await User.create({
           name,
           email,
           passwordHash: await bcrypt.hash(tempPassword, 10),
+          passwordResetToken: resetToken,
           cpf,
           phone,
           role: 'user',
@@ -743,6 +788,18 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
       });
 
       console.log('✅ Créditos adicionados:', credits, 'para', email);
+
+      // Se for novo usuário, retornar URL de definição de senha
+      if (isNewUser && user.passwordResetToken) {
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const setPasswordUrl = `${frontendUrl}/auth/set-password?token=${user.passwordResetToken}&email=${encodeURIComponent(email)}`;
+        
+        return res.json({ 
+          success: true,
+          setPasswordUrl,
+          message: 'Usuário criado e créditos adicionados. URL de definição de senha incluída.'
+        });
+      }
     }
 
     res.json({ success: true });
