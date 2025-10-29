@@ -377,11 +377,12 @@ app.post('/api/prompts/generate', async (req, res) => {
     const user = await User.findById(session.id);
     const cost = parseInt(process.env.PROMPT_CREDIT_COST || '1', 10);
     
-    if (user.credits < cost) {
+    const currentCredits = Number(user.credits) || 0;
+    if (currentCredits < cost) {
       return res.status(400).json({ error: 'Saldo de créditos insuficiente' });
     }
 
-    user.credits -= cost;
+    user.credits = currentCredits - cost;
     await user.save();
 
     await CreditTransaction.create({
@@ -576,11 +577,12 @@ app.post('/api/videos/generate', async (req, res) => {
     const user = await User.findById(session.id);
     const cost = parseInt(process.env.VIDEO_CREDIT_COST || '5', 10);
     
-    if (user.credits < cost) {
+    const currentCredits = Number(user.credits) || 0;
+    if (currentCredits < cost) {
       return res.status(400).json({ error: 'Saldo de créditos insuficiente' });
     }
 
-    user.credits -= cost;
+    user.credits = currentCredits - cost;
     await user.save();
 
     await CreditTransaction.create({
@@ -775,9 +777,13 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
         console.log('✅ Usuário criado:', email);
       }
 
-      // Creditar
-      user.credits += credits;
+      // Creditar (garantir que credits é número)
+      const creditsToAdd = Number(credits) || 0;
+      const oldCredits = Number(user.credits) || 0;
+      user.credits = oldCredits + creditsToAdd;
       await user.save();
+      
+      console.log(`💰 Créditos: ${oldCredits} + ${creditsToAdd} = ${user.credits}`);
 
       await CreditTransaction.create({
         userId: user._id,
