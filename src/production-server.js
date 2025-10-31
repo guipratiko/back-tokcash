@@ -53,7 +53,8 @@ const UserSchema = new mongoose.Schema({
   passwordHash: String,
   passwordResetToken: String,
   role: { type: String, default: 'user' },
-  credits: { type: Number, default: 0 },
+  promptCredits: { type: Number, default: 0 },
+  videoCredits: { type: Number, default: 0 },
   cpf: String,
   phone: String,
   sexo: String,
@@ -102,6 +103,19 @@ const CreditTransactionSchema = new mongoose.Schema({
   refId: String,
 }, { timestamps: true });
 
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  userEmail: String,
+  userName: String,
+  userPhone: String,
+  userCpf: String,
+  transactionId: String,
+  status: String, // approved, pending, cancelled
+  amount: Number, // Valor recebido
+  evento: String, // paid, pending, cancelled
+  productType: String, // monthly, videoUpsell, promptUpsell
+}, { timestamps: true });
+
 // Models
 const User = mongoose.model('User', UserSchema);
 const Plan = mongoose.model('Plan', PlanSchema);
@@ -109,6 +123,7 @@ const Prompt = mongoose.model('Prompt', PromptSchema);
 const Video = mongoose.model('Video', VideoSchema);
 const Trend = mongoose.model('Trend', TrendSchema);
 const CreditTransaction = mongoose.model('CreditTransaction', CreditTransactionSchema);
+const Transaction = mongoose.model('Transaction', TransactionSchema);
 
 // Session storage (ainda em memória)
 const sessions = new Map();
@@ -169,7 +184,8 @@ app.post('/api/auth/register', async (req, res) => {
       phone,
       sexo,
       role: 'user',
-      credits: 0,
+      promptCredits: 0,
+      videoCredits: 0,
     });
 
     const token = 'token-' + Date.now();
@@ -178,7 +194,6 @@ app.post('/api/auth/register', async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
-      credits: user.credits,
     };
     sessions.set(token, userObj);
 
@@ -217,7 +232,6 @@ app.post('/api/auth/login', async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
-      credits: user.credits,
     };
     sessions.set(token, userObj);
 
@@ -276,6 +290,107 @@ app.post('/api/auth/set-password', async (req, res) => {
   }
 });
 
+app.put('/api/auth/update-profile', async (req, res) => {
+  try {
+    const token = req.cookies.accessToken;
+    const session = sessions.get(token);
+
+    if (!session) {
+      return res.status(401).json({ error: 'Não autenticado' });
+    }
+
+    const { name, phone } = req.body;
+
+    // Atualizar usuário no banco
+    const user = await User.findByIdAndUpdate(
+      session.id,
+      { 
+        name: name || undefined,
+        phone: phone || undefined,
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Atualizar sessão
+    sessions.set(token, {
+      id: user._id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+    });
+
+    console.log('✅ Perfil atualizado:', user.email);
+
+    res.json({ 
+      success: true, 
+      message: 'Perfil atualizado com sucesso',
+      user: {
+        email: user.email,
+        name: user.name,
+        phone: user.phone,
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erro ao atualizar perfil:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/auth/change-password', async (req, res) => {
+  try {
+    const token = req.cookies.accessToken;
+    const session = sessions.get(token);
+
+    if (!session) {
+      return res.status(401).json({ error: 'Não autenticado' });
+    }
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Senha atual e nova senha são obrigatórios' });
+    }
+
+    // Validar força da nova senha
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    // Buscar usuário
+    const user = await User.findById(session.id);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Verificar senha atual
+    const isValidPassword = await bcrypt.compare(currentPassword, user.passwordHash);
+    
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Senha atual incorreta' });
+    }
+
+    // Atualizar senha
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    console.log('✅ Senha alterada para:', user.email);
+
+    res.json({ 
+      success: true, 
+      message: 'Senha alterada com sucesso'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao alterar senha:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/auth/me', async (req, res) => {
   try {
     const token = req.cookies.accessToken;
@@ -285,10 +400,10 @@ app.get('/api/auth/me', async (req, res) => {
       return res.status(401).json({ error: 'Não autenticado' });
     }
 
-    // Atualizar créditos do banco
+    // Atualizar dados do banco
     const dbUser = await User.findById(user.id);
     if (dbUser) {
-      user.credits = dbUser.credits;
+      // Sessão não precisa dos créditos, são buscados separadamente
     }
 
     res.json({ user });
@@ -318,7 +433,17 @@ app.get('/api/credits/balance', async (req, res) => {
     }
 
     const user = await User.findById(session.id);
-    res.json({ balance: user ? user.credits : 0 });
+    if (!user) {
+      return res.json({ 
+        promptCredits: 0,
+        videoCredits: 0
+      });
+    }
+
+    res.json({ 
+      promptCredits: user.promptCredits || 0,
+      videoCredits: user.videoCredits || 0
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -362,10 +487,10 @@ app.post('/api/prompts/generate', async (req, res) => {
     
     console.log('✅ Usuário autenticado:', session.email);
 
-    const { nicho, objetivo, cta, duracao, estilo, persona } = req.body;
+    const { nicho, objetivo, cta, duracao, estilo, persona, estiloVoz, idioma, tomVoz, publicoAlvo, ambienteVisual } = req.body;
 
     console.log('\n🚀 === GERANDO PROMPT ===');
-    console.log('📝 Dados recebidos:', { nicho, objetivo, cta, duracao });
+    console.log('📝 Dados recebidos:', { nicho, objetivo, cta, duracao, estiloVoz, idioma, tomVoz, publicoAlvo, ambienteVisual });
     
     // Validar campos obrigatórios
     if (!nicho || !objetivo) {
@@ -373,31 +498,32 @@ app.post('/api/prompts/generate', async (req, res) => {
       return res.status(400).json({ error: 'Nicho e objetivo são obrigatórios' });
     }
 
-    // Verificar e consumir créditos
+    // Buscar usuário
     const user = await User.findById(session.id);
-    const cost = parseInt(process.env.PROMPT_CREDIT_COST || '1', 10);
-    
-    const currentCredits = Number(user.credits) || 0;
-    if (currentCredits < cost) {
-      return res.status(400).json({ error: 'Saldo de créditos insuficiente' });
+
+    // Verificar créditos (mas não bloquear, apenas log)
+    const hasCredits = (user.promptCredits || 0) > 0;
+    if (!hasCredits) {
+      console.log('⚠️ Usuário sem créditos de prompt, mas continuando com o processamento...');
     }
 
-    user.credits = currentCredits - cost;
-    await user.save();
-
-    await CreditTransaction.create({
-      userId: user._id,
-      type: 'debit',
-      amount: cost,
-      reason: 'Geração de prompt',
-    });
-
-    console.log('💳 Créditos debitados:', cost);
-
     // Criar prompt com status "processing"
+    // Nota: A cobrança de créditos é feita externamente
     const prompt = await Prompt.create({
       userId: user._id,
-      inputBrief: { nicho, objetivo, cta, duracao, estilo, persona },
+      inputBrief: { 
+        nicho, 
+        objetivo, 
+        cta, 
+        duracao, 
+        estilo, 
+        persona,
+        estiloVoz,
+        idioma,
+        tomVoz,
+        publicoAlvo,
+        ambienteVisual,
+      },
       resultText: '',
       tags: [nicho, estilo].filter(Boolean),
       status: 'processing',
@@ -417,6 +543,12 @@ app.post('/api/prompts/generate', async (req, res) => {
         duracao,
         estilo,
         persona,
+        estiloVoz,
+        idioma,
+        tomVoz,
+        publicoAlvo,
+        ambienteVisual,
+        phone: user.phone || '',
         callbackUrl: `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/webhooks/prompt-callback`,
       };
 
@@ -462,7 +594,7 @@ ${cta || 'Salve este vídeo!'}
       await prompt.save();
     }
 
-    // Retorna imediatamente com status "processing" ou "completed"
+    // Retorna resposta (webhook já foi enviado)
     res.json({ prompt });
   } catch (error) {
     console.error('❌ Erro:', error);
@@ -479,7 +611,11 @@ app.get('/api/prompts', async (req, res) => {
       return res.status(401).json({ error: 'Não autenticado' });
     }
 
-    const prompts = await Prompt.find({ userId: session.id })
+    // Buscar prompts excluindo os que falharam
+    const prompts = await Prompt.find({ 
+      userId: session.id,
+      status: { $ne: 'failed' } // Excluir prompts com status failed
+    })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -573,28 +709,17 @@ app.post('/api/videos/generate', async (req, res) => {
       return res.status(400).json({ error: 'Nicho e objetivo são obrigatórios' });
     }
 
-    // Verificar e consumir créditos
+    // Buscar usuário
     const user = await User.findById(session.id);
-    const cost = parseInt(process.env.VIDEO_CREDIT_COST || '5', 10);
-    
-    const currentCredits = Number(user.credits) || 0;
-    if (currentCredits < cost) {
-      return res.status(400).json({ error: 'Saldo de créditos insuficiente' });
+
+    // Verificar créditos (mas não bloquear, apenas log)
+    const hasCredits = (user.videoCredits || 0) > 0;
+    if (!hasCredits) {
+      console.log('⚠️ Usuário sem créditos de vídeo, mas continuando com o processamento...');
     }
 
-    user.credits = currentCredits - cost;
-    await user.save();
-
-    await CreditTransaction.create({
-      userId: user._id,
-      type: 'debit',
-      amount: cost,
-      reason: 'Geração de vídeo',
-    });
-
-    console.log('💳 Créditos debitados:', cost);
-
     // Criar vídeo com status "processing"
+    // Nota: A cobrança de créditos é feita externamente
     const video = await Video.create({
       userId: user._id,
       promptId: req.body.promptId || undefined,
@@ -624,6 +749,7 @@ app.post('/api/videos/generate', async (req, res) => {
       duracao,
       estilo,
       persona,
+      phone: user.phone || '',
       callbackUrl: `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/webhooks/video-callback`,
     };
 
@@ -647,7 +773,7 @@ app.post('/api/videos/generate', async (req, res) => {
       }).catch(console.error);
     });
 
-    // Retorna imediatamente com status "processing"
+    // Retorna resposta (webhook já foi enviado)
     res.json({ video });
   } catch (error) {
     console.error('❌ Erro:', error);
@@ -664,10 +790,25 @@ app.get('/api/videos', async (req, res) => {
       return res.status(401).json({ error: 'Não autenticado' });
     }
 
-    const videos = await Video.find({ userId: session.id })
+    // Buscar vídeos excluindo os que falharam
+    let videos = await Video.find({ 
+      userId: session.id,
+      status: { $ne: 'failed' } // Excluir vídeos com status failed
+    })
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
+    
+    // Filtrar também vídeos que têm mensagens de erro sobre créditos no resultText
+    videos = videos.filter(video => {
+      const resultText = video.resultText || ''
+      // Verificar se é uma mensagem de erro sobre créditos
+      const isErrorAboutCredits = resultText.includes('créditos acabaram') || 
+                                   resultText.includes('créditos para') ||
+                                   resultText.includes('Adicione mais créditos') ||
+                                   resultText.includes('adquira mais créditos')
+      return !isErrorAboutCredits
+    })
     
     res.json({ videos });
   } catch (error) {
@@ -746,7 +887,19 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
   try {
     console.log('📥 Webhook n8n recebido:', req.body);
     
-    const { transactionId, name, email, amount, status, cpf, phone, credits, WEBHOOK_SECRET } = req.body;
+    const { 
+      transactionId, 
+      name, 
+      email, 
+      amount, 
+      status, 
+      cpf, 
+      phone, 
+      plan,
+      promptCredits,
+      videoCredits,
+      WEBHOOK_SECRET 
+    } = req.body;
 
     // Validar secret
     if (WEBHOOK_SECRET !== process.env.WEBHOOK_INCOMING_SECRET) {
@@ -772,28 +925,76 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
           cpf,
           phone,
           role: 'user',
-          credits: 0,
+          promptCredits: 0,
+          videoCredits: 0,
         });
         console.log('✅ Usuário criado:', email);
+      } else {
+        // Atualizar informações do usuário se mudaram
+        if (name && user.name !== name) user.name = name;
+        if (phone && user.phone !== phone) user.phone = phone;
       }
 
-      // Creditar (garantir que credits é número)
-      const creditsToAdd = Number(credits) || 0;
-      const oldCredits = Number(user.credits) || 0;
-      user.credits = oldCredits + creditsToAdd;
+      // Verificar se a transação já foi processada
+      const existingTransaction = await Transaction.findOne({ transactionId });
+      
+      if (existingTransaction) {
+        console.log('⚠️ Transação já processada:', transactionId);
+        return res.json({ success: true, message: 'Transação já processada anteriormente' });
+      }
+
+      // Identificar tipo de produto baseado no valor recebido
+      let productType = 'unknown';
+      const amountValue = parseFloat(amount);
+      
+      if (amountValue === 87.82) {
+        productType = 'monthly';
+      } else if (amountValue === 53.41) {
+        productType = 'videoUpsell';
+      } else if (amountValue === 26.25) {
+        productType = 'promptUpsell';
+      }
+
+      // Criar registro de transação
+      await Transaction.create({
+        userId: user._id,
+        userEmail: email,
+        userName: name,
+        userPhone: phone,
+        userCpf: cpf,
+        transactionId,
+        status,
+        amount: amountValue,
+        evento: 'paid',
+        productType,
+      });
+
+      console.log('✅ Transação registrada:', {
+        transactionId,
+        amount: amountValue,
+        productType,
+      });
+
+      // Adicionar créditos conforme informado no payload
+      const promptCreditsToAdd = Number(promptCredits) || 0;
+      const videoCreditsToAdd = Number(videoCredits) || 0;
+      
+      const oldPromptCredits = Number(user.promptCredits) || 0;
+      const oldVideoCredits = Number(user.videoCredits) || 0;
+      
+      user.promptCredits = oldPromptCredits + promptCreditsToAdd;
+      user.videoCredits = oldVideoCredits + videoCreditsToAdd;
       await user.save();
       
-      console.log(`💰 Créditos: ${oldCredits} + ${creditsToAdd} = ${user.credits}`);
+      console.log(`💰 Créditos adicionados: Prompts ${oldPromptCredits} + ${promptCreditsToAdd} = ${user.promptCredits} | Vídeos ${oldVideoCredits} + ${videoCreditsToAdd} = ${user.videoCredits}`);
 
       await CreditTransaction.create({
         userId: user._id,
         type: 'credit',
-        amount: credits,
-        reason: `Pagamento aprovado - TXN ${transactionId}`,
+        amount: promptCreditsToAdd + videoCreditsToAdd,
+        reason: `Pagamento ${plan || 'premium'} aprovado - TXN ${transactionId}`,
         refId: transactionId,
       });
-
-      console.log('✅ Créditos adicionados:', credits, 'para', email);
 
       // Se for novo usuário, retornar URL de definição de senha
       if (isNewUser && user.passwordResetToken) {
@@ -838,7 +1039,8 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
       return res.status(400).json({ error: 'promptId ou videoId é obrigatório' });
     }
 
-    if (!result) {
+    // Se status for failure, não precisa de result
+    if (!result && status !== 'failure' && status !== 'failed') {
       console.log('❌ result faltando');
       return res.status(400).json({ error: 'result é obrigatório' });
     }
@@ -851,13 +1053,21 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
         console.log('👤 UserId:', prompt.userId);
 
         // Atualizar prompt com resultado
-        prompt.resultText = result;
-        prompt.status = status === 'failed' ? 'failed' : 'completed';
+        // Se status for "failure" ou "failed", não salvar o resultado
+        if (status === 'failure' || status === 'failed') {
+          prompt.status = 'failed';
+          // Não salvar resultText quando for failure
+        } else {
+          prompt.resultText = result;
+          prompt.status = 'completed';
+        }
         await prompt.save();
 
         console.log('✅ Prompt atualizado com sucesso!');
         console.log('📊 Status:', prompt.status);
-        console.log('📄 Preview:', result.substring(0, 100) + '...');
+        if (prompt.status !== 'failed') {
+          console.log('📄 Preview:', result.substring(0, 100) + '...');
+        }
 
         return res.json({ success: true, message: 'Prompt atualizado' });
       }
@@ -872,22 +1082,30 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
       console.log('👤 UserId:', video.userId);
 
       // Atualizar vídeo com resultado
-      video.status = status === 'failed' || status === 'error' ? 'failed' : 'completed';
-      
-      // Se vieram assets, atualizar
-      if (req.body.assets) {
-        video.assets = req.body.assets;
+      // Se status for "failure" ou "failed", não salvar o resultado
+      if (status === 'failure' || status === 'failed' || status === 'error') {
+        video.status = 'failed';
+        // Não salvar resultText quando for failure
+      } else {
+        video.status = 'completed';
+        // Se vier result, salvar
+        if (result) {
+          video.resultText = result;
+        }
       }
       
-      // Se vier result, salvar
-      if (result) {
-        video.resultText = result;
+      // Se vieram assets, atualizar (mesmo em caso de failure)
+      if (req.body.assets) {
+        video.assets = req.body.assets;
       }
       
       await video.save();
 
       console.log('✅ Vídeo atualizado com sucesso!');
       console.log('📊 Status:', video.status);
+      if (video.status !== 'failed') {
+        console.log('📄 Preview do resultado salvo');
+      }
 
       return res.json({ success: true, message: 'Vídeo atualizado' });
     }
@@ -932,16 +1150,21 @@ app.post('/api/webhooks/video-callback', async (req, res) => {
     console.log('👤 UserId:', video.userId);
 
     // Atualizar vídeo com resultado
-    video.status = status === 'failed' ? 'failed' : 'completed';
-    
-    // Se vieram assets, atualizar
-    if (req.body.assets) {
-      video.assets = req.body.assets;
+    // Se status for "failure" ou "failed", não salvar o resultado
+    if (status === 'failure' || status === 'failed' || status === 'error') {
+      video.status = 'failed';
+      // Não salvar resultText quando for failure
+    } else {
+      video.status = 'completed';
+      // Se vier result, salvar
+      if (result) {
+        video.resultText = result;
+      }
     }
     
-    // Se vier result, salvar
-    if (result) {
-      video.resultText = result;
+    // Se vieram assets, atualizar (mesmo em caso de failure)
+    if (req.body.assets) {
+      video.assets = req.body.assets;
     }
     
     await video.save();
@@ -952,6 +1175,96 @@ app.post('/api/webhooks/video-callback', async (req, res) => {
     res.json({ success: true, message: 'Vídeo atualizado' });
   } catch (error) {
     console.error('❌ Erro no callback:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin Metrics
+app.get('/api/admin/metrics', async (req, res) => {
+  try {
+    const token = req.cookies.accessToken;
+    const session = sessions.get(token);
+
+    if (!session) {
+      return res.status(401).json({ error: 'Não autenticado' });
+    }
+
+    // IDs dos administradores
+    const adminIds = ['69017c312d3349fdcd287356', '6901fdf32d3349fdcd28737c', '6902beede139a32841ef03d5'];
+    
+    if (!adminIds.includes(session.id.toString())) {
+      return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+    }
+
+    const { period = 'day' } = req.query;
+
+    // Calcular data de início baseado no período
+    let startDate = new Date();
+    switch (period) {
+      case 'hour':
+        startDate.setHours(startDate.getHours() - 1);
+        break;
+      case 'day':
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'month':
+        startDate.setDate(1);
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'year':
+        startDate.setMonth(0, 1);
+        startDate.setHours(0, 0, 0, 0);
+        break;
+    }
+
+    // Total de usuários cadastrados
+    const totalUsers = await User.countDocuments();
+
+    // Vídeos gerados no período
+    const videosGenerated = await Video.countDocuments({
+      createdAt: { $gte: startDate },
+      status: { $ne: 'failed' }
+    });
+
+    // Prompts gerados no período
+    const promptsGenerated = await Prompt.countDocuments({
+      createdAt: { $gte: startDate },
+      status: { $ne: 'failed' }
+    });
+
+    // Buscar vendas reais do banco de dados
+    const transactions = await Transaction.find({
+      createdAt: { $gte: startDate },
+      status: 'approved',
+      evento: 'paid',
+    });
+
+    const sales = {
+      monthly: transactions.filter(t => t.productType === 'monthly').length,
+      videoUpsell: transactions.filter(t => t.productType === 'videoUpsell').length,
+      promptUpsell: transactions.filter(t => t.productType === 'promptUpsell').length,
+    };
+
+    // Calcular receita total (soma dos valores realmente recebidos)
+    const totalRevenue = transactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+
+    console.log('📊 Métricas Admin solicitadas:', {
+      period,
+      totalUsers,
+      videosGenerated,
+      promptsGenerated,
+    });
+
+    res.json({
+      totalUsers,
+      totalRevenue,
+      videosGenerated,
+      promptsGenerated,
+      sales,
+      period,
+    });
+  } catch (error) {
+    console.error('❌ Erro ao buscar métricas:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -4,6 +4,7 @@
   "description": "TokCash Backend - API para geração de prompts e vídeos virais",
   "main": "src/main.ts",
   "scripts": {
+    "dev": "node src/production-server.js",
     "start": "node src/production-server.js",
     "seed": "ts-node src/config/seed.ts",
     "migrate": "ts-node src/config/migrate-legacy-pricing.ts"

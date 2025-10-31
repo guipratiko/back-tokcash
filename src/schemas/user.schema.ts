@@ -18,7 +18,10 @@ export class User {
   role: string;
 
   @Prop({ default: 0 })
-  credits: number;
+  promptCredits: number;
+
+  @Prop({ default: 0 })
+  videoCredits: number;
 
   @Prop()
   cpf?: string;
