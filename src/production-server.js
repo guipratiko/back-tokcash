@@ -817,15 +817,60 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
 
 app.post('/api/webhooks/prompt-callback', async (req, res) => {
   try {
-    console.log('\n📥 === CALLBACK DE PROMPT RECEBIDO ===');
+    console.log('\n📥 === CALLBACK RECEBIDO ===');
     console.log('📦 Body:', JSON.stringify(req.body, null, 2));
     
     const { promptId, result, status, WEBHOOK_SECRET } = req.body;
 
-    // Validar secret (opcional)
-    const secret = process.env.WEBHOOK_PROMPT_CALLBACK_SECRET;
-    if (secret && WEBHOOK_SECRET !== secret) {
-      console.log('❌ Secret inválido');
+    // Verificar se o promptId na verdade é um videoId (quando vem do workflow de vídeo)
+    // Primeiro tenta encontrar como vídeo
+    let video = null;
+    if (promptId) {
+      video = await Video.findById(promptId);
+    }
+
+    // Se encontrou vídeo, processar como callback de vídeo
+    if (video) {
+      console.log('🎬 Detectado como callback de VÍDEO');
+      
+      // Validar secret para vídeo
+      const videoSecret = process.env.WEBHOOK_VIDEO_CALLBACK_SECRET;
+      if (videoSecret && WEBHOOK_SECRET !== videoSecret) {
+        console.log('❌ Secret inválido para vídeo');
+        return res.status(401).json({ error: 'Secret inválido' });
+      }
+
+      if (!result) {
+        console.log('❌ result faltando');
+        return res.status(400).json({ error: 'result é obrigatório' });
+      }
+
+      console.log('✅ Vídeo encontrado:', promptId);
+      console.log('👤 UserId:', video.userId);
+
+      // Converter status "success" para "completed"
+      const finalStatus = status === 'failed' ? 'failed' : 
+                         (status === 'success' ? 'completed' : 'completed');
+      
+      // Atualizar vídeo com resultado
+      video.status = finalStatus;
+      video.resultText = result;
+      await video.save();
+
+      console.log('✅ Vídeo atualizado com sucesso!');
+      console.log('📊 Status:', video.status);
+      console.log('🎥 URL do vídeo:', result);
+
+      return res.json({ success: true, message: 'Vídeo atualizado' });
+    }
+
+    // Se não é vídeo, processar como callback de prompt
+    console.log('📝 Processando como callback de PROMPT');
+    
+    // Validar secret para prompt
+    const promptSecret = process.env.WEBHOOK_PROMPT_CALLBACK_SECRET;
+    if (promptSecret && WEBHOOK_SECRET !== promptSecret) {
+      console.log('❌ Secret inválido para prompt');
       return res.status(401).json({ error: 'Secret inválido' });
     }
 
@@ -845,9 +890,13 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
     console.log('✅ Prompt encontrado:', promptId);
     console.log('👤 UserId:', prompt.userId);
 
+    // Converter status "success" para "completed"
+    const finalStatus = status === 'failed' ? 'failed' : 
+                       (status === 'success' ? 'completed' : 'completed');
+
     // Atualizar prompt com resultado
     prompt.resultText = result;
-    prompt.status = status === 'failed' ? 'failed' : 'completed';
+    prompt.status = finalStatus;
     await prompt.save();
 
     console.log('✅ Prompt atualizado com sucesso!');
