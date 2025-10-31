@@ -817,10 +817,10 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
 
 app.post('/api/webhooks/prompt-callback', async (req, res) => {
   try {
-    console.log('\n📥 === CALLBACK DE PROMPT RECEBIDO ===');
+    console.log('\n📥 === CALLBACK RECEBIDO (Prompt/Video) ===');
     console.log('📦 Body:', JSON.stringify(req.body, null, 2));
     
-    const { promptId, result, status, WEBHOOK_SECRET } = req.body;
+    const { promptId, videoId, result, status, WEBHOOK_SECRET } = req.body;
 
     // Validar secret (opcional)
     const secret = process.env.WEBHOOK_PROMPT_CALLBACK_SECRET;
@@ -829,32 +829,72 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
       return res.status(401).json({ error: 'Secret inválido' });
     }
 
-    if (!promptId || !result) {
-      console.log('❌ promptId ou result faltando');
-      return res.status(400).json({ error: 'promptId e result são obrigatórios' });
+    // Usar videoId se promptId não existir (para compatibilidade com n8n que envia videoId como promptId)
+    const id = videoId || promptId;
+    const isVideo = !!videoId;
+
+    if (!id) {
+      console.log('❌ ID faltando (promptId ou videoId)');
+      return res.status(400).json({ error: 'promptId ou videoId é obrigatório' });
     }
 
-    // Buscar prompt no banco usando promptId
-    const prompt = await Prompt.findById(promptId);
-
-    if (!prompt) {
-      console.log('❌ Prompt não encontrado:', promptId);
-      return res.status(404).json({ error: 'Prompt não encontrado' });
+    if (!result) {
+      console.log('❌ result faltando');
+      return res.status(400).json({ error: 'result é obrigatório' });
     }
 
-    console.log('✅ Prompt encontrado:', promptId);
-    console.log('👤 UserId:', prompt.userId);
+    // Tentar buscar como Prompt primeiro (apenas se não foi explicitamente enviado videoId)
+    if (!isVideo && promptId) {
+      const prompt = await Prompt.findById(promptId);
+      if (prompt) {
+        console.log('✅ Prompt encontrado:', promptId);
+        console.log('👤 UserId:', prompt.userId);
 
-    // Atualizar prompt com resultado
-    prompt.resultText = result;
-    prompt.status = status === 'failed' ? 'failed' : 'completed';
-    await prompt.save();
+        // Atualizar prompt com resultado
+        prompt.resultText = result;
+        prompt.status = status === 'failed' ? 'failed' : 'completed';
+        await prompt.save();
 
-    console.log('✅ Prompt atualizado com sucesso!');
-    console.log('📊 Status:', prompt.status);
-    console.log('📄 Preview:', result.substring(0, 100) + '...');
+        console.log('✅ Prompt atualizado com sucesso!');
+        console.log('📊 Status:', prompt.status);
+        console.log('📄 Preview:', result.substring(0, 100) + '...');
 
-    res.json({ success: true, message: 'Prompt atualizado' });
+        return res.json({ success: true, message: 'Prompt atualizado' });
+      }
+      // Se não encontrou Prompt, pode ser que o promptId seja na verdade um videoId (erro de configuração do n8n)
+      console.log('⚠️ Prompt não encontrado, tentando buscar como Vídeo...');
+    }
+
+    // Buscar como Vídeo (se videoId foi enviado ou se promptId não encontrou Prompt)
+    const video = await Video.findById(id);
+    if (video) {
+      console.log('✅ Vídeo encontrado:', id);
+      console.log('👤 UserId:', video.userId);
+
+      // Atualizar vídeo com resultado
+      video.status = status === 'failed' || status === 'error' ? 'failed' : 'completed';
+      
+      // Se vieram assets, atualizar
+      if (req.body.assets) {
+        video.assets = req.body.assets;
+      }
+      
+      // Se vier result, salvar
+      if (result) {
+        video.resultText = result;
+      }
+      
+      await video.save();
+
+      console.log('✅ Vídeo atualizado com sucesso!');
+      console.log('📊 Status:', video.status);
+
+      return res.json({ success: true, message: 'Vídeo atualizado' });
+    }
+
+    // Se não encontrou nem Prompt nem Vídeo
+    console.log('❌ Prompt ou Vídeo não encontrado:', id);
+    return res.status(404).json({ error: 'Prompt ou Vídeo não encontrado' });
   } catch (error) {
     console.error('❌ Erro no callback:', error);
     res.status(500).json({ error: error.message });
