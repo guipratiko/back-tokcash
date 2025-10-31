@@ -822,35 +822,57 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
     
     const { promptId, result, status, WEBHOOK_SECRET } = req.body;
 
+    if (!promptId) {
+      console.log('❌ promptId faltando no body');
+      return res.status(400).json({ error: 'promptId é obrigatório' });
+    }
+
+    if (!result) {
+      console.log('❌ result faltando no body');
+      return res.status(400).json({ error: 'result é obrigatório' });
+    }
+
+    console.log('🔍 Buscando vídeo com ID:', promptId);
+    
     // Verificar se o promptId na verdade é um videoId (quando vem do workflow de vídeo)
     // Primeiro tenta encontrar como vídeo
     let video = null;
-    if (promptId) {
+    try {
       video = await Video.findById(promptId);
+      if (video) {
+        console.log('✅ Vídeo encontrado no banco!');
+      } else {
+        console.log('⚠️ Vídeo não encontrado com ID:', promptId);
+      }
+    } catch (error) {
+      console.log('⚠️ Erro ao buscar vídeo (pode não ser um ID válido):', error.message);
     }
 
     // Se encontrou vídeo, processar como callback de vídeo
     if (video) {
-      console.log('🎬 Detectado como callback de VÍDEO');
+      console.log('🎬 Processando como callback de VÍDEO');
+      console.log('📹 ID do vídeo:', promptId);
+      console.log('👤 UserId:', video.userId);
       
       // Validar secret para vídeo
       const videoSecret = process.env.WEBHOOK_VIDEO_CALLBACK_SECRET;
-      if (videoSecret && WEBHOOK_SECRET !== videoSecret) {
-        console.log('❌ Secret inválido para vídeo');
-        return res.status(401).json({ error: 'Secret inválido' });
+      if (videoSecret) {
+        if (WEBHOOK_SECRET !== videoSecret) {
+          console.log('❌ Secret inválido para vídeo');
+          console.log('🔑 Secret recebido:', WEBHOOK_SECRET);
+          console.log('🔑 Secret esperado:', videoSecret);
+          return res.status(401).json({ error: 'Secret inválido' });
+        }
+        console.log('✅ Secret válido para vídeo');
+      } else {
+        console.log('⚠️ WEBHOOK_VIDEO_CALLBACK_SECRET não configurado, pulando validação');
       }
-
-      if (!result) {
-        console.log('❌ result faltando');
-        return res.status(400).json({ error: 'result é obrigatório' });
-      }
-
-      console.log('✅ Vídeo encontrado:', promptId);
-      console.log('👤 UserId:', video.userId);
 
       // Converter status "success" para "completed"
       const finalStatus = status === 'failed' ? 'failed' : 
                          (status === 'success' ? 'completed' : 'completed');
+      
+      console.log('📊 Status original:', status, '→ Status final:', finalStatus);
       
       // Atualizar vídeo com resultado
       video.status = finalStatus;
@@ -866,17 +888,18 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
 
     // Se não é vídeo, processar como callback de prompt
     console.log('📝 Processando como callback de PROMPT');
+    console.log('🔍 Buscando prompt com ID:', promptId);
     
-    // Validar secret para prompt
+    // Validar secret para prompt (apenas se configurado)
     const promptSecret = process.env.WEBHOOK_PROMPT_CALLBACK_SECRET;
-    if (promptSecret && WEBHOOK_SECRET !== promptSecret) {
-      console.log('❌ Secret inválido para prompt');
-      return res.status(401).json({ error: 'Secret inválido' });
-    }
-
-    if (!promptId || !result) {
-      console.log('❌ promptId ou result faltando');
-      return res.status(400).json({ error: 'promptId e result são obrigatórios' });
+    if (promptSecret) {
+      if (WEBHOOK_SECRET !== promptSecret) {
+        console.log('❌ Secret inválido para prompt');
+        return res.status(401).json({ error: 'Secret inválido' });
+      }
+      console.log('✅ Secret válido para prompt');
+    } else {
+      console.log('⚠️ WEBHOOK_PROMPT_CALLBACK_SECRET não configurado, pulando validação');
     }
 
     // Buscar prompt no banco usando promptId
@@ -884,6 +907,7 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
 
     if (!prompt) {
       console.log('❌ Prompt não encontrado:', promptId);
+      console.log('💡 Dica: O ID pode ser de um vídeo. Verifique se o vídeo existe no banco.');
       return res.status(404).json({ error: 'Prompt não encontrado' });
     }
 
@@ -906,6 +930,7 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
     res.json({ success: true, message: 'Prompt atualizado' });
   } catch (error) {
     console.error('❌ Erro no callback:', error);
+    console.error('📋 Stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });
