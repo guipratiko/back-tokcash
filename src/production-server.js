@@ -1235,7 +1235,10 @@ app.get('/api/admin/metrics', async (req, res) => {
     // Buscar vendas reais do banco de dados
     const transactions = await Transaction.find({
       createdAt: { $gte: startDate },
-      status: 'approved',
+      $or: [
+        { status: 'approved' },
+        { status: 'paid' }
+      ],
       evento: 'paid',
     });
 
