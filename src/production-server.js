@@ -4,6 +4,8 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -52,6 +54,7 @@ const UserSchema = new mongoose.Schema({
   email: { type: String, unique: true, lowercase: true },
   passwordHash: String,
   passwordResetToken: String,
+  passwordResetExpires: Date,
   role: { type: String, default: 'user' },
   promptCredits: { type: Number, default: 0 },
   videoCredits: { type: Number, default: 0 },
@@ -127,6 +130,126 @@ const Transaction = mongoose.model('Transaction', TransactionSchema);
 
 // Session storage (ainda em memória)
 const sessions = new Map();
+
+// Configuração do Nodemailer (SMTP Umbler)
+const transporter = nodemailer.createTransport({
+  host: 'smtp.umbler.com',
+  port: 587,
+  secure: false, // TLS
+  auth: {
+    user: 'contato@tokcash.com.br',
+    pass: process.env.EMAIL_PASSWORD || 'Tok3945!'
+  },
+  tls: {
+    rejectUnauthorized: false
+  }
+});
+
+// Template de email de recuperação de senha
+function getPasswordResetEmailTemplate(resetLink, userName) {
+  return `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recuperação de Senha - TokCash</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f3f4f6;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+          
+          <!-- Header com Logo -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #9333ea 0%, #ec4899 100%); padding: 40px 20px; text-align: center;">
+              <img src="https://www.tokcash.com.br/images/logos/LogoTokCash.png" alt="TokCash" style="max-width: 200px; height: auto; margin-bottom: 20px;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: bold;">Recuperação de Senha</h1>
+            </td>
+          </tr>
+          
+          <!-- Conteúdo -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="color: #374151; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                Olá <strong>${userName || 'usuário'}</strong>,
+              </p>
+              
+              <p style="color: #374151; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                Recebemos uma solicitação para redefinir a senha da sua conta na <strong>TokCash</strong>.
+              </p>
+              
+              <p style="color: #374151; font-size: 16px; line-height: 1.6; margin: 0 0 30px 0;">
+                Clique no botão abaixo para criar uma nova senha:
+              </p>
+              
+              <!-- Botão -->
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetLink}" style="display: inline-block; background: linear-gradient(135deg, #9333ea 0%, #ec4899 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(147, 51, 234, 0.3);">
+                  Redefinir Minha Senha
+                </a>
+              </div>
+              
+              <p style="color: #6b7280; font-size: 14px; line-height: 1.6; margin: 30px 0 0 0; padding-top: 30px; border-top: 1px solid #e5e7eb;">
+                Ou copie e cole este link no seu navegador:
+              </p>
+              <p style="color: #9333ea; font-size: 14px; word-break: break-all; margin: 10px 0 0 0;">
+                ${resetLink}
+              </p>
+              
+              <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; margin-top: 30px; border-radius: 4px;">
+                <p style="color: #92400e; font-size: 14px; line-height: 1.6; margin: 0;">
+                  <strong>⚠️ Importante:</strong> Este link expira em <strong>1 hora</strong>. Se você não solicitou a recuperação de senha, ignore este email.
+                </p>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+              <p style="color: #6b7280; font-size: 14px; margin: 0 0 10px 0;">
+                <strong>TokCash</strong> - Ganhe dinheiro postando vídeos no TikTok
+              </p>
+              <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+                © ${new Date().getFullYear()} TokCash. Todos os direitos reservados.
+              </p>
+              <p style="color: #9ca3af; font-size: 12px; margin: 10px 0 0 0;">
+                <a href="https://www.tokcash.com.br" style="color: #9333ea; text-decoration: none;">www.tokcash.com.br</a>
+              </p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `;
+}
+
+// Função para enviar email de recuperação
+async function sendPasswordResetEmail(email, resetToken, userName) {
+  const resetLink = `${process.env.FRONTEND_URL || 'https://www.tokcash.com.br'}/auth/reset-password?token=${resetToken}`;
+  
+  const mailOptions = {
+    from: '"TokCash" <contato@tokcash.com.br>',
+    to: email,
+    subject: 'Recuperação de Senha - TokCash',
+    html: getPasswordResetEmailTemplate(resetLink, userName)
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log('✅ Email de recuperação enviado para:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Erro ao enviar email:', error);
+    throw error;
+  }
+}
 
 // Validação de senha forte
 function validatePassword(password) {
@@ -286,6 +409,123 @@ app.post('/api/auth/set-password', async (req, res) => {
     res.json({ success: true, message: 'Senha definida com sucesso' });
   } catch (error) {
     console.error('❌ Erro ao definir senha:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint: Solicitar recuperação de senha (envia email)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email é obrigatório' });
+    }
+
+    // Buscar usuário
+    const user = await User.findOne({ email: email.toLowerCase() });
+
+    // Por segurança, sempre retornar sucesso mesmo se o email não existir
+    // Isso evita que atacantes descubram quais emails estão cadastrados
+    if (!user) {
+      console.log('⚠️ Tentativa de recuperação para email não cadastrado:', email);
+      return res.json({ 
+        success: true, 
+        message: 'Se o email estiver cadastrado, você receberá instruções de recuperação.' 
+      });
+    }
+
+    // Gerar token único
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    
+    // Salvar token e data de expiração (1 hora)
+    user.passwordResetToken = resetToken;
+    user.passwordResetExpires = new Date(Date.now() + 3600000); // 1 hora
+    await user.save();
+
+    // Enviar email
+    try {
+      await sendPasswordResetEmail(user.email, resetToken, user.name);
+      console.log('✅ Email de recuperação enviado para:', user.email);
+    } catch (emailError) {
+      console.error('❌ Erro ao enviar email:', emailError);
+      // Limpar token se falhar ao enviar email
+      user.passwordResetToken = null;
+      user.passwordResetExpires = null;
+      await user.save();
+      return res.status(500).json({ error: 'Erro ao enviar email de recuperação' });
+    }
+
+    // Enviar webhook para Clerky (não bloqueia a resposta)
+    const resetLink = `${process.env.FRONTEND_URL || 'https://www.tokcash.com.br'}/auth/reset-password?token=${resetToken}`;
+    
+    fetch('https://api.clerky.com.br/webhook/2d96a88d-e10b-4ff4-9a7d-abcff867acf0', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: user.email,
+        name: user.name,
+        event: 'password_reset_requested',
+        resetUrl: resetLink,
+        timestamp: new Date().toISOString()
+      })
+    })
+      .then(() => console.log('✅ Webhook de recuperação enviado'))
+      .catch(err => console.error('⚠️ Erro ao enviar webhook:', err.message));
+
+    res.json({ 
+      success: true, 
+      message: 'Instruções de recuperação enviadas para seu email.' 
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao solicitar recuperação:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint: Resetar senha com token
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token e senha são obrigatórios' });
+    }
+
+    // Validar força da senha
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      return res.status(400).json({ error: passwordError });
+    }
+
+    // Buscar usuário com token válido e não expirado
+    const user = await User.findOne({
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: new Date() } // Token ainda válido
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Token inválido ou expirado' });
+    }
+
+    // Atualizar senha e limpar token
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordResetToken = null;
+    user.passwordResetExpires = null;
+    await user.save();
+
+    console.log('✅ Senha resetada com sucesso para:', user.email);
+
+    res.json({ 
+      success: true, 
+      message: 'Senha alterada com sucesso! Você já pode fazer login.' 
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao resetar senha:', error);
     res.status(500).json({ error: error.message });
   }
 });
