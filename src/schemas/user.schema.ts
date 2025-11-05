@@ -17,11 +17,11 @@ export class User {
   @Prop({ default: 'user', enum: ['user', 'admin'] })
   role: string;
 
-  @Prop({ default: 0 })
-  promptCredits: number;
+  @Prop({ default: '0' })
+  promptCredits: string;
 
-  @Prop({ default: 0 })
-  videoCredits: number;
+  @Prop({ default: '0' })
+  videoCredits: string;
 
   @Prop()
   cpf?: string;

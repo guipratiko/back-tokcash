@@ -56,8 +56,8 @@ const UserSchema = new mongoose.Schema({
   passwordResetToken: String,
   passwordResetExpires: Date,
   role: { type: String, default: 'user' },
-  promptCredits: { type: Number, default: 0 },
-  videoCredits: { type: Number, default: 0 },
+  promptCredits: { type: String, default: '0' },
+  videoCredits: { type: String, default: '0' },
   cpf: String,
   phone: String,
   sexo: String,
@@ -307,8 +307,8 @@ app.post('/api/auth/register', async (req, res) => {
       phone,
       sexo,
       role: 'user',
-      promptCredits: 0,
-      videoCredits: 0,
+      promptCredits: '0',
+      videoCredits: '0',
     });
 
     const token = 'token-' + Date.now();
@@ -675,14 +675,14 @@ app.get('/api/credits/balance', async (req, res) => {
     const user = await User.findById(session.id);
     if (!user) {
       return res.json({ 
-        promptCredits: 0,
-        videoCredits: 0
+        promptCredits: '0',
+        videoCredits: '0'
       });
     }
 
     res.json({ 
-      promptCredits: user.promptCredits || 0,
-      videoCredits: user.videoCredits || 0
+      promptCredits: user.promptCredits || '0',
+      videoCredits: user.videoCredits || '0'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -742,7 +742,7 @@ app.post('/api/prompts/generate', async (req, res) => {
     const user = await User.findById(session.id);
 
     // Verificar créditos (mas não bloquear, apenas log)
-    const hasCredits = (user.promptCredits || 0) > 0;
+    const hasCredits = user.promptCredits && user.promptCredits !== '0' && parseInt(user.promptCredits) > 0;
     if (!hasCredits) {
       console.log('⚠️ Usuário sem créditos de prompt, mas continuando com o processamento...');
     }
@@ -953,7 +953,7 @@ app.post('/api/videos/generate', async (req, res) => {
     const user = await User.findById(session.id);
 
     // Verificar créditos (mas não bloquear, apenas log)
-    const hasCredits = (user.videoCredits || 0) > 0;
+    const hasCredits = user.videoCredits && user.videoCredits !== '0' && parseInt(user.videoCredits) > 0;
     if (!hasCredits) {
       console.log('⚠️ Usuário sem créditos de vídeo, mas continuando com o processamento...');
     }
@@ -1165,8 +1165,8 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
           cpf,
           phone,
           role: 'user',
-          promptCredits: 0,
-          videoCredits: 0,
+          promptCredits: '0',
+          videoCredits: '0',
         });
         console.log('✅ Usuário criado:', email);
       } else {
@@ -1215,15 +1215,18 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
         productType,
       });
 
-      // Adicionar créditos conforme informado no payload
-      const promptCreditsToAdd = Number(promptCredits) || 0;
-      const videoCreditsToAdd = Number(videoCredits) || 0;
+      // Adicionar créditos conforme informado no payload (mantendo como string)
+      const promptCreditsToAdd = String(promptCredits || '0');
+      const videoCreditsToAdd = String(videoCredits || '0');
       
-      const oldPromptCredits = Number(user.promptCredits) || 0;
-      const oldVideoCredits = Number(user.videoCredits) || 0;
+      const oldPromptCredits = parseInt(user.promptCredits || '0');
+      const oldVideoCredits = parseInt(user.videoCredits || '0');
       
-      user.promptCredits = oldPromptCredits + promptCreditsToAdd;
-      user.videoCredits = oldVideoCredits + videoCreditsToAdd;
+      const newPromptCredits = oldPromptCredits + parseInt(promptCreditsToAdd);
+      const newVideoCredits = oldVideoCredits + parseInt(videoCreditsToAdd);
+      
+      user.promptCredits = String(newPromptCredits);
+      user.videoCredits = String(newVideoCredits);
       await user.save();
       
       console.log(`💰 Créditos adicionados: Prompts ${oldPromptCredits} + ${promptCreditsToAdd} = ${user.promptCredits} | Vídeos ${oldVideoCredits} + ${videoCreditsToAdd} = ${user.videoCredits}`);
@@ -1231,7 +1234,7 @@ app.post('/api/webhooks/incoming/n8n', async (req, res) => {
       await CreditTransaction.create({
         userId: user._id,
         type: 'credit',
-        amount: promptCreditsToAdd + videoCreditsToAdd,
+        amount: parseInt(promptCreditsToAdd) + parseInt(videoCreditsToAdd),
         reason: `Pagamento ${plan || 'premium'} aprovado - TXN ${transactionId}`,
         refId: transactionId,
       });
@@ -1289,24 +1292,24 @@ app.post('/api/webhooks/prompt-callback', async (req, res) => {
     if (!isVideo && promptId) {
       const prompt = await Prompt.findById(promptId);
       if (prompt) {
-        console.log('✅ Prompt encontrado:', promptId);
-        console.log('👤 UserId:', prompt.userId);
+    console.log('✅ Prompt encontrado:', promptId);
+    console.log('👤 UserId:', prompt.userId);
 
-        // Atualizar prompt com resultado
+    // Atualizar prompt com resultado
         // Se status for "failure" ou "failed", não salvar o resultado
         if (status === 'failure' || status === 'failed') {
           prompt.status = 'failed';
           // Não salvar resultText quando for failure
         } else {
-          prompt.resultText = result;
+    prompt.resultText = result;
           prompt.status = 'completed';
         }
-        await prompt.save();
+    await prompt.save();
 
-        console.log('✅ Prompt atualizado com sucesso!');
-        console.log('📊 Status:', prompt.status);
+    console.log('✅ Prompt atualizado com sucesso!');
+    console.log('📊 Status:', prompt.status);
         if (prompt.status !== 'failed') {
-          console.log('📄 Preview:', result.substring(0, 100) + '...');
+    console.log('📄 Preview:', result.substring(0, 100) + '...');
         }
 
         return res.json({ success: true, message: 'Prompt atualizado' });
@@ -1396,9 +1399,9 @@ app.post('/api/webhooks/video-callback', async (req, res) => {
       // Não salvar resultText quando for failure
     } else {
       video.status = 'completed';
-      // Se vier result, salvar
-      if (result) {
-        video.resultText = result;
+    // Se vier result, salvar
+    if (result) {
+      video.resultText = result;
       }
     }
     
